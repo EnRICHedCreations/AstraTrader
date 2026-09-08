@@ -16,13 +16,13 @@ const obs = (id, side, rawQty, usdRaw, at) => ({
   slot: at,
   wallet: "a",
 });
-test("partial exits count as one complete round trip", () => {
+test("partial exits are scored as separate realized exits", () => {
   const r = walletScore([
     obs("a", "buy", "10", "100000000", 1),
     obs("b", "sell", "5", "60000000", 2),
     obs("c", "sell", "5", "60000000", 3),
   ]);
-  assert.equal(r.roundTrips, 1);
+  assert.equal(r.roundTrips, 2);
   assert.ok(Math.abs(r.pnl - 19.94) < 0.001);
   assert.equal(r.eligible, false);
 });
