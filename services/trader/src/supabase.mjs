@@ -67,6 +67,17 @@ export class SupabasePersistence {
     });
   }
 
+  async insertEvent(row) {
+    const params = new URLSearchParams({select: "seq"});
+    const created = await this.request(`${TABLES.events}?${params.toString()}`, {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({id: row.id, at: row.at, kind: row.kind, body: row.body, prev: row.prev, hash: row.hash}),
+    });
+    if (!Array.isArray(created) || !created[0]?.seq) throw Error("Unexpected Supabase event insert response");
+    return Number(created[0].seq);
+  }
+
   async hydrate(store) {
     const [meta, eventsDesc, jobs, observationsDesc, orders, entities, reservations] = await Promise.all([
       this.rows("meta", {order: "key.asc", maxRows: 2000}),
