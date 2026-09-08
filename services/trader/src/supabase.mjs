@@ -31,6 +31,7 @@ export class SupabasePersistence {
       signal: AbortSignal.timeout(15000),
       redirect: "error",
     });
+    if (response.status === 416 && (!options.method || options.method === "GET")) return [];
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw Error(`Supabase persistence HTTP ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`);
@@ -40,16 +41,19 @@ export class SupabasePersistence {
     return text ? JSON.parse(text) : null;
   }
 
-  async rows(table, order = "") {
+  async rows(table, {order = "", filters = {}, maxRows = 10000} = {}) {
     const out = [];
-    for (let offset = 0; ; offset += 1000) {
-      const query = `?select=*${order ? `&order=${encodeURIComponent(order)}` : ""}`;
-      const page = await this.request(TABLES[table] + query, {
-        headers: { Range: `${offset}-${offset + 999}` },
+    for (let offset = 0; offset < maxRows; offset += 1000) {
+      const params = new URLSearchParams({select: "*"});
+      if (order) params.set("order", order);
+      for (const [key, value] of Object.entries(filters)) params.set(key, value);
+      const pageSize = Math.min(1000, maxRows - offset);
+      const page = await this.request(`${TABLES[table]}?${params.toString()}`, {
+        headers: { Range: `${offset}-${offset + pageSize - 1}` },
       });
       if (!Array.isArray(page)) throw Error(`Unexpected Supabase ${table} response`);
       out.push(...page);
-      if (page.length < 1000) break;
+      if (page.length < pageSize) break;
     }
     return out;
   }
@@ -64,15 +68,23 @@ export class SupabasePersistence {
   }
 
   async hydrate(store) {
-    const [meta, events, jobs, observations, orders, entities, reservations] = await Promise.all([
-      this.rows("meta", "key.asc"),
-      this.rows("events", "seq.asc"),
-      this.rows("jobs", "available.asc"),
-      this.rows("observations", "at.asc,id.asc"),
-      this.rows("orders", "updated.asc"),
-      this.rows("entities", "at.asc"),
-      this.rows("reservations", "day.asc,id.asc"),
+    const [meta, eventsDesc, jobs, observationsDesc, orders, entities, reservations] = await Promise.all([
+      this.rows("meta", {order: "key.asc", maxRows: 2000}),
+      this.rows("events", {order: "seq.desc", maxRows: 10000}),
+      this.rows("jobs", {order: "available.desc", filters: {state: "in.(pending,running)"}, maxRows: 5000}),
+      this.rows("observations", {order: "at.desc,id.desc", maxRows: 25000}),
+      this.rows("orders", {order: "updated.desc", maxRows: 10000}),
+      this.rows("entities", {order: "at.desc", maxRows: 20000}),
+      this.rows("reservations", {order: "day.desc,id.desc", maxRows: 2000}),
     ]);
-    store.hydrate({ meta, events, jobs, observations, orders, entities, reservations });
+    store.hydrate({
+      meta,
+      events: eventsDesc.reverse(),
+      jobs,
+      observations: observationsDesc.reverse(),
+      orders,
+      entities,
+      reservations,
+    });
   }
 }
