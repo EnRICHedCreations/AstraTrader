@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 const tools=[
 {name:'get_status',title:'Get AstraTrader status',description:'Use this when you need current mode, health, processing lag, positions, P&L, approved assets, or live-readiness checks.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}},
 {name:'get_opportunities',title:'Get trading opportunities',description:'Use this when you need current AstraTrader signals, scores, rejection reasons, eligibility, and evidence.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}},
@@ -15,7 +13,7 @@ const tools=[
 {name:'close_position',title:'Close paper position',description:'Use this when an open paper position should be closed. Direct MCP live-position closing is not exposed; live exits remain signer/policy controlled.',inputSchema:{type:'object',required:['mint'],properties:{mint:{type:'string'}},additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true}}
 ];
 const actionFor={inspect_asset:'inspect_asset',approve_asset:'approve_asset',revoke_asset:'revoke_asset',revoke_all_assets:'revoke_all_assets',pause_signals:'pause',resume_signals:'resume',kill_trading:'kill',execute_signal:'execute_signal',close_position:'close_position'};
-const supportedLegacy=['2025-11-25','2025-06-18','2025-03-26'];
+const supported=['2025-11-25','2025-06-18','2025-03-26'];
 function json(res,status,value,extra={}){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...extra});res.end(value===undefined?'':JSON.stringify(value))}
 async function read(req,max=32768){let n=0,chunks=[];for await(const c of req){n+=c.length;if(n>max)throw Error('MCP request too large');chunks.push(c)}return chunks.length?JSON.parse(Buffer.concat(chunks).toString('utf8')):{}}
 function rpc(id,result){return{jsonrpc:'2.0',id,result}}
@@ -23,26 +21,28 @@ function rpcError(id,code,message){return{jsonrpc:'2.0',id,error:{code,message}}
 async function local(c,path,method='GET',payload){const r=await fetch(`http://127.0.0.1:${c.port}${path}`,{method,headers:{authorization:'Bearer '+c.apiToken,'content-type':'application/json'},...(payload?{body:JSON.stringify(payload)}:{})});const j=await r.json();if(!r.ok)throw Error(j.error??`AstraTrader HTTP ${r.status}`);return j}
 async function callTool(name,args,c){if(name==='get_status')return local(c,'/api/agent/status');if(name==='get_opportunities')return local(c,'/api/agent/opportunities');if(name==='get_orders')return local(c,'/api/agent/orders');const action=actionFor[name];if(!action)throw Error('Unknown MCP tool');return local(c,'/api/agent/action','POST',{action,...(args??{})})}
 function authOk(req,c){const auth=String(req.headers.authorization??'');return auth==='Bearer '+c.apiToken}
-export async function handleMcp(req,res,c){const url=new URL(req.url,'http://localhost');if(url.pathname!=='/mcp')return false;if(!authOk(req,c)){json(res,401,{error:'Unauthorized MCP'},{'WWW-Authenticate':'Bearer'});return true}
-  if(req.method==='GET'){json(res,405,{error:'GET event stream not required for this stateless server'},{Allow:'POST, DELETE'});return true}
-  if(req.method==='DELETE'){res.writeHead(204,{'cache-control':'no-store'});res.end();return true}
-  if(req.method!=='POST'){json(res,405,{error:'Method not allowed'},{Allow:'POST, DELETE'});return true}
+function initialized(method){return method==='initialize'||method==='notifications/initialized'||method==='ping'||method==='tools/list'}
+export async function handleMcp(req,res,c){const url=new URL(req.url,'http://localhost');if(url.pathname!=='/mcp')return false;
+  if(req.method==='GET'){
+    // ChatGPT may probe the endpoint while creating the credential link. Do not expose data or tools here.
+    json(res,200,{service:'astratrader-mcp',status:'ready',authentication:'bearer',protocol:'MCP'});return true
+  }
+  if(req.method!=='POST'){json(res,405,{error:'Method not allowed'},{Allow:'GET, POST'});return true}
   let m;try{m=await read(req)}catch(e){json(res,400,rpcError(null,-32700,e.message));return true}
   const id=m.id??null,method=m.method;
+  // Permit protocol discovery before credential attachment. Tool execution remains authenticated.
+  if(!authOk(req,c)&&!initialized(method)){json(res,401,{error:'Unauthorized MCP'},{'WWW-Authenticate':'Bearer realm="AstraTrader"'});return true}
   try{
-    if(method==='server/discover'){
-      json(res,200,rpc(id,{protocolVersion:'2026-07-28',serverInfo:{name:'astratrader',version:'1.0.1'},capabilities:{tools:{listChanged:false}},instructions:'AstraTrader operational control. Asset policy may be changed, but deterministic risk, capital, and signer gates remain authoritative.'}),{'MCP-Protocol-Version':'2026-07-28'});return true
-    }
     if(method==='initialize'){
       const requested=String(m.params?.protocolVersion??'');
-      const protocol=supportedLegacy.includes(requested)?requested:'2025-03-26';
-      const session=randomUUID();
-      json(res,200,rpc(id,{protocolVersion:protocol,serverInfo:{name:'astratrader',version:'1.0.1'},capabilities:{tools:{listChanged:false}},instructions:'AstraTrader operational control. Asset policy changes are allowed; deterministic safety and signer gates remain authoritative.'}),{'MCP-Protocol-Version':protocol,'Mcp-Session-Id':session});return true
+      const protocol=supported.includes(requested)?requested:'2025-03-26';
+      json(res,200,rpc(id,{protocolVersion:protocol,serverInfo:{name:'AstraTrader',version:'1.0.2'},capabilities:{tools:{listChanged:false}},instructions:'AstraTrader operational control. Mutating tool calls require bearer authentication; deterministic risk, capital, and signer gates remain authoritative.'}),{'MCP-Protocol-Version':protocol});return true
     }
     if(method==='notifications/initialized'){res.writeHead(202,{'cache-control':'no-store'});res.end();return true}
     if(method==='ping'){json(res,200,rpc(id,{}));return true}
     if(method==='tools/list'){json(res,200,rpc(id,{tools}));return true}
     if(method==='tools/call'){
+      if(!authOk(req,c)){json(res,401,{error:'Unauthorized MCP'},{'WWW-Authenticate':'Bearer realm="AstraTrader"'});return true}
       const name=m.params?.name;
       const data=await callTool(name,m.params?.arguments??{},c);
       json(res,200,rpc(id,{content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data,isError:false}));return true
