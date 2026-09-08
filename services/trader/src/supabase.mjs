@@ -41,19 +41,21 @@ export class SupabasePersistence {
   }
   async insertEvent(row){for(let attempt=0;attempt<8;attempt+=1){const latestQuery=new URLSearchParams({select:"seq",order:"seq.desc",limit:"1"}),latest=await this.request(`${TABLES.events}?${latestQuery.toString()}`),seq=Number(latest?.[0]?.seq??0)+1,insertQuery=new URLSearchParams({select:"seq"});const response=await this.fetcher(new URL(`${TABLES.events}?${insertQuery.toString()}`,this.base),{method:"POST",headers:this.headers({Prefer:"return=representation"}),body:JSON.stringify({seq,id:row.id,at:row.at,kind:row.kind,body:row.body,prev:row.prev,hash:row.hash}),signal:AbortSignal.timeout(15000),redirect:"error"});if(response.ok){const text=await response.text(),created=text?JSON.parse(text):null;if(!Array.isArray(created)||Number(created[0]?.seq)!==seq)throw Error("Unexpected Supabase event insert response");return seq}const text=await response.text().catch(()=>"");if(response.status!==409)throw Error(`Supabase persistence HTTP ${response.status}${text?`: ${text.slice(0,240)}`:""}`);const existingQuery=new URLSearchParams({select:"seq",id:`eq.${row.id}`,limit:"1"}),existing=await this.request(`${TABLES.events}?${existingQuery.toString()}`);if(existing?.[0]?.seq!=null)return Number(existing[0].seq)}throw Error("Supabase event sequence allocation contention");}
   async hydrate(store) {
-    // Wallet qualification depends on historical observations and durable wallet entities.
-    // Keep trading evidence, but never resurrect stale queue work from a prior runtime.
     const now=Date.now(),cutoff=now-ACTIVE_JOB_MAX_AGE_MS;
     await this.pruneJobs(now);
-    const [meta,eventsDesc,jobs,observationsDesc,orders,entities,reservations]=await Promise.all([
+    // Wallets are durable strategy evidence. Hydrate them independently from volatile
+    // signal/relationship entities so a busy entity table cannot evict qualified wallets.
+    const [meta,eventsDesc,jobs,observationsDesc,orders,walletEntities,otherEntities,reservations]=await Promise.all([
       this.rows("meta",{order:"key.asc",maxRows:2000}),
       this.rows("events",{order:"seq.desc",maxRows:10000}),
       this.rows("jobs",{order:"available.desc",filters:{state:"in.(pending,running)",available:`gte.${cutoff}`},maxRows:5000}),
       this.rows("observations",{order:"at.desc,id.desc",maxRows:100000}),
       this.rows("orders",{order:"updated.desc",maxRows:20000}),
-      this.rows("entities",{order:"at.desc",maxRows:100000}),
+      this.rows("entities",{order:"at.desc",filters:{kind:"eq.wallet"},maxRows:100000}),
+      this.rows("entities",{order:"at.desc",filters:{kind:"neq.wallet"},maxRows:100000}),
       this.rows("reservations",{order:"day.desc,id.desc",maxRows:2000}),
     ]);
+    const entities=[...walletEntities,...otherEntities];
     store.hydrate({meta,events:eventsDesc.reverse(),jobs,observations:observationsDesc.reverse(),orders,entities,reservations});
   }
 }
