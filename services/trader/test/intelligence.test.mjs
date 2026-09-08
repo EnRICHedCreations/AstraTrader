@@ -4,8 +4,9 @@ import {
   walletScore,
   relationshipGroups,
   decode,
+  mintProgram,
 } from "../src/intelligence.mjs";
-import { USDC, JUPITER } from "../src/config.mjs";
+import { USDC, JUPITER, TOKEN } from "../src/config.mjs";
 const obs = (id, side, rawQty, usdRaw, at) => ({
   id,
   side,
@@ -111,4 +112,9 @@ test("opposed token deltas without DEX invocation are transfers, not swaps", () 
   assert.equal(decode(t, "s", 1).trades.length, 0);
   t.transaction.message.instructions = [{ programId: JUPITER }];
   assert.equal(decode(t, "s", 1).trades.length, 1);
+});
+test("mint programs are explicit and unknown programs fail closed", () => {
+  assert.deepEqual(mintProgram(TOKEN), { id: TOKEN, name: "spl-token", recognized: true, executionSupported: true });
+  assert.deepEqual(mintProgram("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"), { id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", name: "spl-token-2022", recognized: true, executionSupported: false });
+  assert.deepEqual(mintProgram("not-a-token-program"), { id: "not-a-token-program", name: "unknown", recognized: false, executionSupported: false });
 });
