@@ -165,7 +165,7 @@
       <div class="cards">
         <div class="card">Transactions<b id="tx">0</b></div>
         <div class="card">Wallets<b id="wallets">0</b></div>
-        <div class="card">Ingestion lag<b id="lag">—</b></div>
+        <div class="card">Processing lag<b id="lag">—</b></div>
         <div class="card">Unresolved orders<b id="unknown">0</b></div>
       </div>
       <div class="grid">
@@ -224,6 +224,9 @@
       busy = true;
       try {
         const d = await api("/api/state");
+        const processingLagMs = d.state.lastSuccess
+          ? Math.max(0, Date.now() - d.state.lastSuccess)
+          : d.health.lagMs;
         el("app").hidden = false;
         el("connect").hidden = true;
         text("error", "");
@@ -235,7 +238,7 @@
         );
         text("tx", String(d.state.transactions));
         text("wallets", String(d.wallets.length));
-        text("lag", Math.round(d.health.lagMs / 1000) + "s");
+        text("lag", (processingLagMs / 1000).toFixed(1) + "s");
         text(
           "unknown",
           String(
@@ -273,7 +276,12 @@
             })),
         );
         text("events", d.events.slice(0, 25));
-        text("health", d.health);
+        text("health", {
+          ...d.health,
+          processingLagMs,
+          finalizedDataAgeMs: d.health.lagMs,
+          note: "finalizedDataAgeMs includes normal Solana finalization time; processingLagMs measures AstraTrader pipeline delay",
+        });
         el("ready").replaceChildren();
         for (const [name, ok] of [
           ...d.liveChecks,
