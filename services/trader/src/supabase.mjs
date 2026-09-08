@@ -68,14 +68,31 @@ export class SupabasePersistence {
   }
 
   async insertEvent(row) {
-    const params = new URLSearchParams({select: "seq"});
-    const created = await this.request(`${TABLES.events}?${params.toString()}`, {
-      method: "POST",
-      headers: { Prefer: "return=representation" },
-      body: JSON.stringify({id: row.id, at: row.at, kind: row.kind, body: row.body, prev: row.prev, hash: row.hash}),
-    });
-    if (!Array.isArray(created) || !created[0]?.seq) throw Error("Unexpected Supabase event insert response");
-    return Number(created[0].seq);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const latestQuery = new URLSearchParams({select: "seq", order: "seq.desc", limit: "1"});
+      const latest = await this.request(`${TABLES.events}?${latestQuery.toString()}`);
+      const seq = Number(latest?.[0]?.seq ?? 0) + 1;
+      const insertQuery = new URLSearchParams({select: "seq"});
+      const response = await this.fetcher(new URL(`${TABLES.events}?${insertQuery.toString()}`, this.base), {
+        method: "POST",
+        headers: this.headers({Prefer: "return=representation"}),
+        body: JSON.stringify({seq,id:row.id,at:row.at,kind:row.kind,body:row.body,prev:row.prev,hash:row.hash}),
+        signal: AbortSignal.timeout(15000),
+        redirect: "error",
+      });
+      if (response.ok) {
+        const text = await response.text();
+        const created = text ? JSON.parse(text) : null;
+        if (!Array.isArray(created) || Number(created[0]?.seq) !== seq) throw Error("Unexpected Supabase event insert response");
+        return seq;
+      }
+      const text = await response.text().catch(() => "");
+      if (response.status !== 409) throw Error(`Supabase persistence HTTP ${response.status}${text ? `: ${text.slice(0, 240)}` : ""}`);
+      const existingQuery = new URLSearchParams({select: "seq", id: `eq.${row.id}`, limit: "1"});
+      const existing = await this.request(`${TABLES.events}?${existingQuery.toString()}`);
+      if (existing?.[0]?.seq != null) return Number(existing[0].seq);
+    }
+    throw Error("Supabase event sequence allocation contention");
   }
 
   async hydrate(store) {
