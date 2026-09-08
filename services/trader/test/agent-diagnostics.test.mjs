@@ -24,13 +24,25 @@ test("observation coverage and worker checkpoint are auditable",()=>{
   store.close();
 });
 
-test("wallet and system diagnostics rank qualified wallets and summarize blockers",()=>{
+test("wallet and system diagnostics separate durable and active eligibility",()=>{
   const store=new Store(":memory:");
-  const trader={state:()=>({wallets:[weak,good],signals:[{reasons:[]},{reasons:["No current deployer/supply review","Fewer than 2 eligible correlation groups"]}]})};
+  store.entity("wallet",good.wallet,good);
+  store.entity("wallet",weak.wallet,weak);
+  const trader={state:()=>({wallets:[weak],signals:[{reasons:[]},{reasons:["No current deployer/supply review","Fewer than 2 eligible correlation groups"]}]})};
   const listed=listWalletDiagnostics(store,trader,{limit:10});
-  assert.equal(listed.wallets[0].wallet,good.wallet);assert.equal(listed.wallets[0].eligible,true);
+  assert.equal(listed.wallets[0].wallet,good.wallet);
+  assert.equal(listed.wallets[0].eligible,true);
+  assert.equal(listed.wallets[0].active,false);
+  assert.equal(listed.historicalEligible,1);
+  assert.equal(listed.activeEligible,0);
+  const activeOnly=listWalletDiagnostics(store,trader,{limit:10,scope:"active"});
+  assert.equal(activeOnly.wallets[0].wallet,weak.wallet);
   const diag=systemDiagnostics(store,trader);
-  assert.equal(diag.wallets.eligible,1);assert.equal(diag.wallets.failures.realizedExits,1);assert.equal(diag.opportunities.eligible,1);
+  assert.equal(diag.wallets.historicalEligible,1);
+  assert.equal(diag.wallets.historicalEligibleInactive,1);
+  assert.equal(diag.wallets.activeEligible,0);
+  assert.equal(diag.wallets.failures.realizedExits,1);
+  assert.equal(diag.opportunities.eligible,1);
   assert.equal(diag.opportunities.rejectionReasons["No current deployer/supply review"],1);
   store.close();
 });
