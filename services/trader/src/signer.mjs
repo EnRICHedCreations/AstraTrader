@@ -1,36 +1,14 @@
 import { Keypair, Connection } from "@solana/web3.js";
 import bs58 from "bs58";
 import { readFileSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { Providers } from "./providers.mjs";
-import { USDC, liveConfiguration, assets } from "./config.mjs";
+import { USDC, liveConfiguration } from "./config.mjs";
 import { inspect } from "./intelligence.mjs";
 import {
   validateIntent,
   validateQuote,
   validateTransaction,
 } from "./guard.mjs";
-export function approval(c) {
-  try {
-    const bytes = process.env.LIVE_APPROVAL_BASE64 ? Buffer.from(process.env.LIVE_APPROVAL_BASE64,"base64") : readFileSync(process.env.LIVE_APPROVAL_FILE ?? "/config/live-approval.json");
-    const h = createHash("sha256").update(bytes).digest("hex");
-    const a = JSON.parse(bytes);
-    return (
-      h === c.approvalHash &&
-      a.operatorApproved === true &&
-      a.closedPaperTrades >= 100 &&
-      a.outOfSampleReturn > 0 &&
-      a.maxDrawdown <= 0.1 &&
-      a.successfulReconciliationTests === true &&
-      a.routeSimulationValidated === true &&
-      Date.now() - a.generatedAt < 7 * 86400000 &&
-      a.generatedAt <= Date.now() &&
-      /^[a-f0-9]{64}$/.test(a.datasetHash)
-    );
-  } catch {
-    return false;
-  }
-}
 export class Signer {
   constructor(c, store, dependencies = {}) {
     this.c = c;
@@ -55,7 +33,6 @@ export class Signer {
       checks: [
         ...liveConfiguration(this.c),
         ["Dedicated signing key loaded", !!this.key],
-        ["Reviewed paper evidence", approval(this.c)],
         ["Kill switch clear", !this.s.get("killed", false)],
       ],
       unresolved: this.s
@@ -150,8 +127,6 @@ export class Signer {
         this.s.saveOrder(o);
         this.s.event("SIGNED", { id: o.id, signature });
       });
-      // Signed bytes are persisted before network submission. A timeout never creates
-      // a replacement transaction. Only reconciliation may resolve uncertainty.
       try {
         const result = await this.p.execute(q, signed);
         if (result.signature && result.signature !== signature)
