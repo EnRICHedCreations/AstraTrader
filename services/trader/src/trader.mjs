@@ -131,6 +131,7 @@ export class Trader {
             this.s.event("WALLET_SCORE", entity);
           }
           this.s.set("ingestLastSuccess", Date.now());
+          this.s.set("processingLagMs", Math.max(0, Date.now() - job.available));
           this.s.set(
             "lastBlockTime",
             Math.max(this.s.get("lastBlockTime", 0), tx.blockTime * 1000),
@@ -148,7 +149,7 @@ export class Trader {
     if (now - this.s.get("lastBlockTime", 0) > this.c.maxLagMs) {
       this.s.entity("health", "signal", {
         status: "STALE",
-        reason: "Finalized ingestion older than 15s",
+        reason: `Finalized ingestion older than ${Math.round(this.c.maxLagMs / 1000)}s`,
         at: now,
       });
       return;
@@ -315,7 +316,6 @@ export class Trader {
             );
         });
       } else if (o.state === "unknown") {
-        // A network failure before signer acceptance is not proof of nonexecution.
         this.s.entity("health", "unresolved", {
           at: Date.now(),
           status: "BLOCKED",
@@ -598,6 +598,7 @@ export class Trader {
         .all()
         .reverse()
         .map((r) => JSON.parse(r.body));
+    const finalizedDataAgeMs = Date.now() - this.s.get("lastBlockTime", 0);
     return {
       mode: this.c.mode,
       state: {
@@ -633,7 +634,10 @@ export class Trader {
       liveEquity: this.s.entities("liveEquity")[0],
       health: {
         cycle: this.s.get("lastCycle"),
-        lagMs: Date.now() - this.s.get("lastBlockTime", 0),
+        processingLagMs: this.s.get("processingLagMs", 0),
+        finalizedDataAgeMs,
+        lagMs: finalizedDataAgeMs,
+        maxFinalizedAgeMs: this.c.maxLagMs,
         jobs: this.s.db
           .prepare("SELECT state,COUNT(*) AS count FROM jobs GROUP BY state")
           .all(),
