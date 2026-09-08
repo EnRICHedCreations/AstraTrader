@@ -37,12 +37,17 @@ export class Providers {
     this.c = c;
   }
   async rpc(method, params = []) {
+    // Paper mode may observe confirmed transactions for low-latency simulation.
+    // Live mode never relaxes a caller's finalized commitment.
+    const effectiveParams = method === "getTransaction" && this.c.mode === "paper" && params[1]?.commitment === "finalized"
+      ? [params[0], { ...params[1], commitment: "confirmed" }]
+      : params;
     const r = await json(
       this.c.rpc,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: effectiveParams }),
       },
       !["sendTransaction"].includes(method),
     );
