@@ -1,0 +1,47 @@
+services:
+  trader:
+    build: ./services/trader
+    restart: unless-stopped
+    init: true
+    env_file: .env.runtime
+    environment:
+      PORT: "8080"
+      DATABASE_PATH: /data/trader.sqlite
+      PERSISTENCE_CONFIRMED: "true"
+      SIGNER_URL: http://signer:8090
+      ASSET_POLICY_FILE: /config/approved-assets.json
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - trader-data:/data
+      - ./config:/config:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    stop_grace_period: 40s
+  signer:
+    profiles: [live]
+    build: ./services/trader
+    command: [node, src/signer-server.mjs]
+    restart: unless-stopped
+    init: true
+    env_file: .env.runtime
+    environment:
+      PORT: "8090"
+      DATABASE_PATH: /data/signer.sqlite
+      SIGNER_KEYPAIR_FILE: /run/secrets/trading-key.json
+      ASSET_POLICY_FILE: /config/approved-assets.json
+      LIVE_APPROVAL_FILE: /config/live-approval.json
+    volumes:
+      - signer-data:/data
+      - ./config:/config:ro
+      - ./secrets/trading-key.json:/run/secrets/trading-key.json:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    stop_grace_period: 40s
+volumes:
+  trader-data:
+  signer-data:

@@ -1,0 +1,13 @@
+import {env} from 'cloudflare:workers';
+export function db():D1Database {const d=(env as any).DB;if(!d)throw new Error('Database unavailable');return d}
+export async function readState(){return JSON.parse((await db().prepare("SELECT body FROM state WHERE id = 'engine'").first<{body:string}>())?.body??'null')}
+export async function saveState(s:any){await db().prepare("INSERT INTO state(id,body) VALUES('engine',?) ON CONFLICT(id) DO UPDATE SET body=excluded.body").bind(JSON.stringify(s)).run()}
+export async function records(kind:string,limit=200):Promise<any[]>{const r=await db().prepare('SELECT body FROM records WHERE kind=? ORDER BY at DESC,id DESC LIMIT ?').bind(kind,limit).all<{body:string}>();return r.results.map(r=>JSON.parse(r.body))}
+export async function put(kind:string,body:any,id=crypto.randomUUID()){await db().prepare('INSERT OR IGNORE INTO records(id,kind,at,body) VALUES(?,?,?,?)').bind(id,kind,body.at??Date.now(),JSON.stringify({...body,id})).run();return id}
+export async function lock(){return (await db().prepare("INSERT INTO locks(id,until) VALUES('cycle',?) ON CONFLICT(id) DO UPDATE SET until=excluded.until WHERE locks.until < ?").bind(Date.now()+180000,Date.now()).run()).meta.changes>0}
+export async function unlock(){await db().prepare("DELETE FROM locks WHERE id='cycle'").run()}
+export function initial(){return {version:'actor-v1.0',startedAt:Date.now(),running:true,cash:1000,initial:1000,peak:1000,realized:0,fees:0,positions:[],pending:[],cursor:null,blocks:0,transactions:0,lastTick:null,lastSuccess:null,provider:'Not yet checked',errors:0,haltReason:null}}
+
+export async function putMany(items:{kind:string,body:any,id:string}[]){for(let i=0;i<items.length;i+=80)await db().batch(items.slice(i,i+80).map(({kind,body,id})=>db().prepare('INSERT OR IGNORE INTO records(id,kind,at,body) VALUES(?,?,?,?)').bind(id,kind,body.at??Date.now(),JSON.stringify({...body,id}))))}
+export async function saveWallets(wallets:any[]){for(let i=0;i<wallets.length;i+=40)await db().batch(wallets.slice(i,i+40).flatMap(w=>[db().prepare('INSERT INTO records(id,kind,at,body) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at,body=excluded.body').bind('wallet:'+w.wallet,'wallet',w.at,JSON.stringify(w)),db().prepare('INSERT INTO records(id,kind,at,body) VALUES(?,?,?,?)').bind(crypto.randomUUID(),'score',w.at,JSON.stringify(w))]))}
+export async function commitPortfolio(s:any,items:any[]){await db().batch([...items.map(({kind,body,id})=>db().prepare('INSERT OR IGNORE INTO records(id,kind,at,body) VALUES(?,?,?,?)').bind(id??crypto.randomUUID(),kind,body.at,JSON.stringify(body))),db().prepare("INSERT INTO state(id,body) VALUES('engine',?) ON CONFLICT(id) DO UPDATE SET body=excluded.body").bind(JSON.stringify(s))])}

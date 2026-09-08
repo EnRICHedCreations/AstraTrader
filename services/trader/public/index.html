@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  /><title>AstraTrader • Operations</title
+  ><style>
+    :root {
+      color-scheme: dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      background: #0b1014;
+      color: #e1e9ee;
+      font: 16px/1.5 system-ui;
+      margin: 0;
+    }
+    header {
+      padding: 24px 32px;
+      border-bottom: 1px solid #293740;
+      display: flex;
+      justify-content: space-between;
+    }
+    header b {
+      letter-spacing: 0.15em;
+      color: #a4eead;
+    }
+    main {
+      max-width: 1400px;
+      margin: auto;
+      padding: 28px;
+    }
+    button,
+    input {
+      font: inherit;
+      background: #172129;
+      color: #e1e9ee;
+      border: 1px solid #42515c;
+      border-radius: 5px;
+      padding: 10px 14px;
+    }
+    button {
+      cursor: pointer;
+    }
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid #a4eead;
+    }
+    button:disabled {
+      opacity: 0.5;
+    }
+    .bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin: 24px 0;
+    }
+    .card,
+    section {
+      background: #11191f;
+      border: 1px solid #293740;
+      border-radius: 6px;
+      padding: 20px;
+      min-width: 0;
+    }
+    .card b {
+      display: block;
+      font-size: 28px;
+      margin-top: 10px;
+    }
+    .muted {
+      color: #a5b6c2;
+    }
+    h1 {
+      font-size: 28px;
+    }
+    h2 {
+      font-size: 18px;
+      margin-top: 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 13px/1.6 monospace;
+      max-height: 500px;
+      overflow: auto;
+    }
+    .row {
+      padding: 12px 0;
+      border-bottom: 1px solid #293740;
+    }
+    .good {
+      color: #a4eead;
+    }
+    .bad {
+      color: #ff9e98;
+    }
+    #error {
+      color: #ffb4ac;
+    }
+    #connect {
+      margin: 20px 0;
+    }
+    #connect input {
+      width: min(100%, 500px);
+    }
+    @media (max-width: 800px) {
+      .cards {
+        grid-template-columns: 1fr 1fr;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      main {
+        padding: 18px;
+      }
+      header {
+        padding: 18px;
+      }
+    }
+  </style>
+  <header><b>ASTRA TRADER</b><span id="mode">OPERATIONS</span></header>
+  <main>
+    <h1>Trading operations</h1>
+    <p class="muted">
+      Continuous ingestion, reconciled orders and enforceable execution limits.
+    </p>
+    <form id="connect">
+      <label
+        >Operator token
+        <input
+          id="token"
+          type="password"
+          autocomplete="off"
+          required
+          minlength="32"
+      /></label>
+      <button>Connect</button>
+      <p class="muted">
+        The token stays in this page's memory. Use HTTPS outside localhost.
+      </p>
+    </form>
+    <p id="error" role="alert"></p>
+    <div id="app" hidden>
+      <div class="bar">
+        <button data-action="pause">Pause signals</button
+        ><button data-action="resume">Resume signals</button
+        ><button data-action="kill" class="bad">Kill switch</button
+        ><button id="export">Export audit page</button
+        ><button id="evaluate">Evaluate evidence</button
+        ><button id="disconnect">Disconnect</button>
+      </div>
+      <div class="cards">
+        <div class="card">Transactions<b id="tx">0</b></div>
+        <div class="card">Wallets<b id="wallets">0</b></div>
+        <div class="card">Ingestion lag<b id="lag">—</b></div>
+        <div class="card">Unresolved orders<b id="unknown">0</b></div>
+      </div>
+      <div class="grid">
+        <section>
+          <h2>Live readiness</h2>
+          <div id="ready"></div>
+        </section>
+        <section>
+          <h2>Account state</h2>
+          <pre id="account"></pre>
+        </section>
+        <section>
+          <h2>Recent signals</h2>
+          <div id="signals"></div>
+        </section>
+        <section>
+          <h2>Order journal</h2>
+          <pre id="orders"></pre>
+        </section>
+        <section>
+          <h2>Audit trail</h2>
+          <pre id="events"></pre>
+        </section>
+        <section>
+          <h2>Pipeline health</h2>
+          <pre id="health"></pre>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script>
+    let secret = "",
+      timer,
+      busy = false,
+      cursor = 0;
+    const el = (id) => document.getElementById(id);
+    async function api(path, method = "GET", payload) {
+      const r = await fetch(path, {
+        method,
+        headers: {
+          Authorization: "Bearer " + secret,
+          "Content-Type": "application/json",
+        },
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
+      });
+      const j = await r.json();
+      if (!r.ok) throw Error(j.error ?? "Request failed");
+      return j;
+    }
+    function text(id, value) {
+      el(id).textContent =
+        typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+    async function refresh() {
+      if (busy || !secret) return;
+      busy = true;
+      try {
+        const d = await api("/api/state");
+        el("app").hidden = false;
+        el("connect").hidden = true;
+        text("error", "");
+        text(
+          "mode",
+          d.mode.toUpperCase() +
+            " / " +
+            (d.state.haltReason ? "HALTED" : "MONITORING"),
+        );
+        text("tx", String(d.state.transactions));
+        text("wallets", String(d.wallets.length));
+        text("lag", Math.round(d.health.lagMs / 1000) + "s");
+        text(
+          "unknown",
+          String(
+            d.trades.filter((o) =>
+              ["unknown", "signed", "submitted"].includes(o.state),
+            ).length,
+          ),
+        );
+        text(
+          "account",
+          d.mode === "live"
+            ? {
+                wallet: d.signer?.wallet,
+                holdings: d.signer?.holdings,
+                equity: d.liveEquity,
+                note: "Live amounts come from finalized reconciliation",
+              }
+            : {
+                paperCash: d.state.cash,
+                paperRealized: d.state.realized,
+                positions: d.state.positions,
+              },
+        );
+        text(
+          "orders",
+          d.trades
+            .slice(0, 20)
+            .map(({ id, state, mode, side, result, signature }) => ({
+              id,
+              state,
+              mode,
+              side,
+              result,
+              signature,
+            })),
+        );
+        text("events", d.events.slice(0, 25));
+        text("health", d.health);
+        el("ready").replaceChildren();
+        for (const [name, ok] of [
+          ...d.liveChecks,
+          ...(d.signer?.checks ?? []),
+        ]) {
+          const row = document.createElement("div");
+          row.className = "row " + (ok ? "good" : "bad");
+          row.textContent = (ok ? "PASS · " : "BLOCKED · ") + name;
+          el("ready").append(row);
+        }
+        el("signals").replaceChildren();
+        for (const s of d.signals.slice(0, 15)) {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.textContent =
+            s.symbol + " · " + s.action + " · " + s.reasons.join("; ");
+          el("signals").append(row);
+        }
+      } catch (e) {
+        text("error", e.message);
+      } finally {
+        busy = false;
+      }
+    }
+    el("connect").onsubmit = (e) => {
+      e.preventDefault();
+      secret = el("token").value;
+      el("token").value = "";
+      refresh();
+      clearInterval(timer);
+      timer = setInterval(refresh, 5000);
+    };
+    document.querySelectorAll("[data-action]").forEach(
+      (b) =>
+        (b.onclick = async () => {
+          try {
+            await api("/api/control", "POST", { action: b.dataset.action });
+            await refresh();
+          } catch (e) {
+            text("error", e.message);
+          }
+        }),
+    );
+    el("export").onclick = async () => {
+      try {
+        const d = await api("/api/export?after=" + cursor);
+        const u = URL.createObjectURL(
+          new Blob([JSON.stringify(d, null, 2)], { type: "application/json" }),
+        );
+        const a = document.createElement("a");
+        a.href = u;
+        a.download = "astratrader-audit-" + cursor + ".json";
+        a.click();
+        URL.revokeObjectURL(u);
+        cursor = d.next;
+        el("export").textContent = d.hasMore
+          ? "Export next audit page"
+          : "Export new audit records";
+      } catch (e) {
+        text("error", e.message);
+      }
+    };
+    el("evaluate").onclick = async () => {
+      try {
+        const d = await api("/api/backtest", "POST");
+        text("health", d);
+      } catch (e) {
+        text("error", e.message);
+      }
+    };
+    el("disconnect").onclick = () => {
+      secret = "";
+      clearInterval(timer);
+      el("app").hidden = true;
+      el("connect").hidden = false;
+    };
+  </script>
+</html>

@@ -1,0 +1,10 @@
+import {Miniflare} from 'miniflare';import {readFile} from 'node:fs/promises';import assert from 'node:assert/strict';import test from 'node:test';
+test('persistent API, controls, collector lock and evidence export',async()=>{const mf=new Miniflare({modules:true,scriptPath:'dist/server/index.js',modulesRules:[{type:'ESModule',include:['**/*.js'],fallthrough:true}],compatibilityDate:'2026-05-22',compatibilityFlags:['nodejs_compat'],d1Databases:['DB']});try{const d=await mf.getD1Database('DB');const sql=await readFile('drizzle/0000_mute_thing.sql','utf8');await d.batch(sql.split('--> statement-breakpoint').map(s=>d.prepare(s.trim())));let r=await mf.dispatchFetch('http://actor.test/api/state');assert.equal(r.status,200);assert.equal((await r.json()).state.cash,1000);
+ r=await mf.dispatchFetch('http://actor.test/api/control',{method:'POST',headers:{origin:'http://evil.test','content-type':'application/json'},body:JSON.stringify({action:'kill'})});assert.equal(r.status,403);
+ r=await mf.dispatchFetch('http://actor.test/api/control',{method:'POST',headers:{origin:'http://actor.test','content-type':'application/json'},body:JSON.stringify({action:'pause'})});assert.equal(r.status,200);
+ r=await mf.dispatchFetch('http://actor.test/api/state');assert.equal((await r.json()).state.running,false);
+ r=await mf.dispatchFetch('http://actor.test/api/tick',{method:'POST',headers:{origin:'http://actor.test'}});assert.equal((await r.json()).paused,true);
+ r=await mf.dispatchFetch('http://actor.test/api/backtest',{method:'POST',headers:{origin:'http://actor.test'}});assert.equal((await r.json()).status,'INSUFFICIENT_EVIDENCE');
+ r=await mf.dispatchFetch('http://actor.test/api/export');const out=await r.json();assert.equal(out.experiments.length,1);assert.equal(out.events.length,1);
+ r=await mf.dispatchFetch('http://actor.test/');assert.equal(r.status,200);const html=await r.text();assert.ok(html.includes('ACTOR'));assert.ok(html.includes('PAPER ONLY'));
+ }finally{await mf.dispose()}});

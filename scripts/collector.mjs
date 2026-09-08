@@ -1,0 +1,5 @@
+// Run on an always-on host. No private keys or signing capabilities.
+const origin=process.env.ACTOR_URL;const token=process.env.COLLECTOR_TOKEN;const cookie=process.env.SITES_ACCESS_COOKIE;
+if(!origin||!token){console.error('Set ACTOR_URL and COLLECTOR_TOKEN. Private Sites also require an authorized access cookie.');process.exit(1)}
+let stopping=false;process.on('SIGTERM',()=>stopping=true);process.on('SIGINT',()=>stopping=true);
+while(!stopping){try{const r=await fetch(new URL('/api/tick',origin),{method:'POST',headers:{Authorization:`Bearer ${token}`,...(cookie?{Cookie:cookie}:{})},signal:AbortSignal.timeout(170000),redirect:'error'});const type=r.headers.get('content-type')??'';if(!r.ok||!type.includes('application/json'))throw Error(`Collector HTTP ${r.status}; verify access and environment`);const j=await r.json();console.log(JSON.stringify({at:new Date().toISOString(),ok:j.ok,slot:j.slot,busy:j.busy,paused:j.paused,error:j.error}));}catch{console.error(JSON.stringify({at:new Date().toISOString(),error:'Collector unavailable; check access, provider and terminal health'}))}await new Promise(r=>setTimeout(r,30000))}

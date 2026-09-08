@@ -1,0 +1,11 @@
+{
+  "source": "Solana mainnet finalized getBlock",
+  "slot": 445196461,
+  "blockTime": 1788825629,
+  "transactionCount": 1011,
+  "tradeCandidates": 10,
+  "discoveredWallets": 8,
+  "tokens": 7,
+  "eligibleWallets": 0,
+  "profitabilityConclusion": "None: one block is insufficient evidence"
+}
