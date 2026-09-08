@@ -26,11 +26,32 @@ test("partial exits are scored as separate realized exits", () => {
   assert.ok(Math.abs(r.pnl - 19.94) < 0.001);
   assert.equal(r.eligible, false);
 });
+test("prefix-only historical sells are unscored until a clean buy establishes basis", () => {
+  const r = walletScore([
+    obs("prefix", "sell", "5", "50000000", 1),
+    obs("buy", "buy", "10", "100000000", 2),
+    obs("sell", "sell", "10", "120000000", 3),
+  ]);
+  assert.equal(r.unscoredHistoricalExits, 1);
+  assert.equal(r.taintedInventoryEvents, 0);
+  assert.equal(r.activeTaintedMints, 0);
+  assert.equal(r.roundTrips, 1);
+  assert.ok(r.pnl > 0);
+});
+test("inventory inconsistency after an established basis remains tainted", () => {
+  const r = walletScore([
+    obs("buy", "buy", "5", "50000000", 1),
+    obs("oversell", "sell", "10", "100000000", 2),
+    obs("later", "sell", "1", "10000000", 3),
+  ]);
+  assert.equal(r.roundTrips, 0);
+  assert.ok(r.taintedInventoryEvents >= 1);
+  assert.equal(r.activeTaintedMints, 1);
+});
 test("unobserved sells and token gifts cannot create profitable history", () => {
-  assert.equal(
-    walletScore([obs("a", "sell", "1", "100000000", 1)]).roundTrips,
-    0,
-  );
+  const prefix = walletScore([obs("a", "sell", "1", "100000000", 1)]);
+  assert.equal(prefix.roundTrips, 0);
+  assert.equal(prefix.unscoredHistoricalExits, 1);
   const r = walletScore([
     obs("a", "buy", "10", "100000000", 1),
     obs("b", "transfer", "100", "0", 2),
@@ -38,6 +59,7 @@ test("unobserved sells and token gifts cannot create profitable history", () => 
   ]);
   assert.equal(r.eligible, false);
   assert.equal(r.roundTrips, 0);
+  assert.equal(r.activeTaintedMints, 1);
 });
 test("future outcomes do not affect earlier scores", () => {
   const r = walletScore(
