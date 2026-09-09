@@ -24,6 +24,11 @@ export function decode(tx, signature, slot, receivedAt = Date.now()) {
     const deltas=[...all.values()].filter((x)=>x.wallet===w&&x.raw!==0n),usd=deltas.find((x)=>x.mint===USDC),others=deltas.filter((x)=>x.mint!==USDC);
     if (isSwap&&usd&&others.length===1&&usd.raw*others[0].raw<0n) {
       const t=others[0]; trades.push({id:signature+":"+w+":"+t.mint,signature,slot,at,receivedAt,wallet:w,mint:t.mint,side:t.raw>0n?"buy":"sell",rawQty:(t.raw<0n?-t.raw:t.raw).toString(),decimals:t.decimals,usdRaw:(usd.raw<0n?-usd.raw:usd.raw).toString(),feeLamports:tx.meta.fee,classification:"Jupiter invocation with single signer-owned USDC/token delta"});
+    } else if (isSwap) {
+      const entries=others.filter((x)=>x.raw>0n);
+      if(entries.length===1){
+        const t=entries[0]; trades.push({id:signature+":"+w+":"+t.mint,signature,slot,at,receivedAt,wallet:w,mint:t.mint,side:"buy",rawQty:t.raw.toString(),decimals:t.decimals,usdRaw:"0",feeLamports:tx.meta.fee,valuation:"unavailable",correlationOnly:true,classification:"Jupiter invocation with single signer-owned positive non-USDC token delta; correlation-only entry evidence"});
+      } else for (const d of deltas) if (d.mint!==USDC) transfers.push({id:signature+":transfer:"+w+":"+d.mint,wallet:w,mint:d.mint,side:"transfer",at,slot,rawQty:d.raw.toString(),signature});
     } else for (const d of deltas) if (d.mint!==USDC) transfers.push({id:signature+":transfer:"+w+":"+d.mint,wallet:w,mint:d.mint,side:"transfer",at,slot,rawQty:d.raw.toString(),signature});
   }
   for (const i of instructions) { const p=i.parsed; if(i.program==="system"&&p?.type==="transfer")edges.push({a:p.info.source,b:p.info.destination,kind:"funding",at,signature,lamports:p.info.lamports}); if(i.program==="spl-token"&&["mintTo","mintToChecked","initializeMint","initializeMint2"].includes(p?.type))edges.push({kind:p.type,a:p.info.mintAuthority??p.info.authority,b:p.info.mint,at,signature}); }
