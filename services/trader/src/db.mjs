@@ -12,6 +12,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.persistence = persistence;
     this.pending = [];
+    this.eventPending = Promise.resolve();
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
  CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,at INTEGER NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL,prev TEXT NOT NULL,hash TEXT NOT NULL);
@@ -28,8 +29,9 @@ export class Store {
  PRAGMA user_version=1;`);
   }
   mirror(fn) { if (!this.persistence) return; this.pending.push(fn); }
+  mirrorEvent(fn) { if (!this.persistence) return; this.eventPending = this.eventPending.then(fn); }
   async flush() {
-    if (!this.persistence || !this.pending.length) return;
+    if (!this.persistence) return;
     const errors=[];
     const worker=async()=>{
       while(this.pending.length){
@@ -37,7 +39,9 @@ export class Store {
         try{await fn()}catch(error){errors.push(error)}
       }
     };
-    await Promise.all(Array.from({length:Math.min(PERSISTENCE_CONCURRENCY,this.pending.length)},()=>worker()));
+    const workers=Array.from({length:Math.min(PERSISTENCE_CONCURRENCY,this.pending.length)},()=>worker());
+    const eventTail=this.eventPending;
+    await Promise.all([...workers,eventTail]);
     if(errors.length)throw errors[0];
   }
   hydrate(data) { const now=Date.now(),cutoff=now-ACTIVE_JOB_MAX_AGE_MS; this.tx(() => {
@@ -52,7 +56,7 @@ export class Store {
   tx(fn) { this.db.exec("BEGIN IMMEDIATE"); try { const r=fn(); this.db.exec("COMMIT"); return r; } catch(e){ this.db.exec("ROLLBACK"); throw e; } }
   get(key,fallback=null){const r=this.db.prepare("SELECT value FROM meta WHERE key=?").get(key);return r?JSON.parse(r.value):fallback}
   set(key,value){const encoded=JSON.stringify(value);this.db.prepare("INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key,encoded);this.mirror(()=>this.persistence.upsert("meta",{key,value:encoded},"key"));}
-  event(kind,body,id=randomUUID()){const prev=this.db.prepare("SELECT hash FROM events ORDER BY seq DESC LIMIT 1").get()?.hash??"genesis",at=Date.now(),encoded=JSON.stringify(body),hash=createHash("sha256").update(JSON.stringify({prev,at,kind,id,body:encoded})).digest("hex");const result=this.db.prepare("INSERT OR IGNORE INTO events(id,at,kind,body,prev,hash) VALUES(?,?,?,?,?,?)").run(id,at,kind,encoded,prev,hash);if(result.changes)this.mirror(()=>this.persistence.insertEvent({id,at,kind,body:encoded,prev,hash}));}
+  event(kind,body,id=randomUUID()){const prev=this.db.prepare("SELECT hash FROM events ORDER BY seq DESC LIMIT 1").get()?.hash??"genesis",at=Date.now(),encoded=JSON.stringify(body),hash=createHash("sha256").update(JSON.stringify({prev,at,kind,id,body:encoded})).digest("hex");const result=this.db.prepare("INSERT OR IGNORE INTO events(id,at,kind,body,prev,hash) VALUES(?,?,?,?,?,?)").run(id,at,kind,encoded,prev,hash);if(result.changes)this.mirrorEvent(()=>this.persistence.insertEvent({id,at,kind,body:encoded,prev,hash}));}
   events(after=0,limit=200){return this.db.prepare("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?").all(after,limit).map(x=>({...x,body:JSON.parse(x.body)}))}
   enqueue(id,body){const encoded=JSON.stringify(body),available=Date.now(),r=this.db.prepare("INSERT OR IGNORE INTO jobs(id,body,available) VALUES(?,?,?)").run(id,encoded,available);if(r.changes)this.mirror(()=>this.persistence.upsert("jobs",{id,body:encoded,state:"pending",attempts:0,available,lease:null,lease_until:null},"id"));return r.changes>0}
   claim(now=Date.now()){return this.tx(()=>{const cutoff=now-ACTIVE_JOB_MAX_AGE_MS;this.db.prepare("UPDATE jobs SET state='dead',lease=NULL,lease_until=NULL WHERE state='pending' AND available<?").run(cutoff);const r=this.db.prepare("SELECT * FROM jobs WHERE (state='pending' AND available<=? AND available>=?) OR (state='running' AND lease_until<?) ORDER BY available DESC LIMIT 1").get(now,cutoff,now);if(!r)return null;const lease=randomUUID(),lease_until=now+120000,attempts=r.attempts+1;this.db.prepare("UPDATE jobs SET state='running',lease=?,lease_until=?,attempts=attempts+1 WHERE id=?").run(lease,lease_until,r.id);this.mirror(()=>this.persistence.upsert("jobs",{id:r.id,body:r.body,state:"running",attempts,available:r.available,lease,lease_until},"id"));return{...r,body:JSON.parse(r.body),lease,attempts}})}
