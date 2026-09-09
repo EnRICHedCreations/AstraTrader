@@ -1,5 +1,7 @@
 import { walletScore } from './intelligence.mjs';
 
+const PERSIST_BATCH_SIZE = 250;
+
 export function rescoreWallets(store, source = 'strategy-change') {
   const wallets = store.entities('wallet', 100000);
   const at = Date.now();
@@ -7,10 +9,8 @@ export function rescoreWallets(store, source = 'strategy-change') {
   const persistedRows = [];
   const upsert = store.db.prepare("INSERT INTO entities(kind,id,at,body) VALUES('wallet',?,?,?) ON CONFLICT(kind,id) DO UPDATE SET at=excluded.at,body=excluded.body");
 
-  // Rescoring thousands of wallets must not enqueue one remote Supabase request per
-  // wallet. That made startup remain on the bootstrap page while flush() serialized
-  // thousands of HTTP calls. Recompute locally in one SQLite transaction, then mirror
-  // the complete set with one PostgREST bulk upsert.
+  // Recompute locally in one SQLite transaction. This is the authoritative in-process
+  // score set used by signal evaluation immediately after startup/strategy changes.
   store.tx(() => {
     for (const old of wallets) {
       if (!old?.wallet) continue;
@@ -23,8 +23,16 @@ export function rescoreWallets(store, source = 'strategy-change') {
     store.event('WALLET_RESCORE', { at, source, wallets: wallets.length, eligible });
   });
 
-  if (persistedRows.length && store.persistence) {
-    store.mirror(() => store.persistence.upsert('entities', persistedRows, 'kind,id'));
+  // Cold start must never depend on rewriting every derived wallet score to Supabase.
+  // Scores are recomputed locally on every boot from durable observations. Runtime
+  // strategy changes do need persistence, but write them in bounded batches so no
+  // single PostgREST statement carries thousands of rows.
+  if (source !== 'startup' && persistedRows.length && store.persistence) {
+    store.mirror(async () => {
+      for (let i = 0; i < persistedRows.length; i += PERSIST_BATCH_SIZE) {
+        await store.persistence.upsert('entities', persistedRows.slice(i, i + PERSIST_BATCH_SIZE), 'kind,id');
+      }
+    });
   }
   return { wallets: wallets.length, eligible, at };
 }
