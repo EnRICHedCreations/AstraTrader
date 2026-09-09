@@ -113,6 +113,37 @@ test("opposed token deltas without DEX invocation are transfers, not swaps", () 
   t.transaction.message.instructions = [{ programId: JUPITER }];
   assert.equal(decode(t, "s", 1).trades.length, 1);
 });
+test("non-USDC Jupiter entry is correlation evidence without changing wallet score", () => {
+  const t = {
+    blockTime: 1,
+    meta: {
+      preTokenBalances: [
+        { owner: "w", mint: "input", uiTokenAmount: { amount: "10", decimals: 0 } },
+      ],
+      postTokenBalances: [
+        { owner: "w", mint: "input", uiTokenAmount: { amount: "5", decimals: 0 } },
+        { owner: "w", mint: "target", uiTokenAmount: { amount: "2", decimals: 0 } },
+      ],
+      fee: 5000,
+    },
+    transaction: {
+      message: {
+        accountKeys: [{ pubkey: "w", signer: true }],
+        instructions: [{ programId: JUPITER }],
+      },
+    },
+  };
+  const decoded = decode(t, "s", 1);
+  assert.equal(decoded.transfers.length, 0);
+  assert.equal(decoded.trades.length, 1);
+  assert.equal(decoded.trades[0].mint, "target");
+  assert.equal(decoded.trades[0].side, "buy");
+  assert.equal(decoded.trades[0].usdRaw, "0");
+  assert.equal(decoded.trades[0].correlationOnly, true);
+  const score = walletScore(decoded.trades);
+  assert.equal(score.roundTrips, 0);
+  assert.equal(score.taintedInventoryEvents, 0);
+});
 test("mint programs are explicit and unknown programs fail closed", () => {
   assert.deepEqual(mintProgram(TOKEN), { id: TOKEN, name: "spl-token", recognized: true, executionSupported: true });
   assert.deepEqual(mintProgram("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"), { id: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", name: "spl-token-2022", recognized: true, executionSupported: false });
