@@ -49,7 +49,17 @@ export class Store {
   observe(o){const encoded=JSON.stringify(o),r=this.db.prepare("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?)").run(o.id,o.wallet,o.mint,o.at,encoded);if(r.changes)this.mirror(()=>this.persistence.upsert("observations",{id:o.id,wallet:o.wallet,mint:o.mint,at:o.at,body:encoded},"id"));return r.changes>0}
   observations(wallet=null,before=Date.now()){const rows=wallet?this.db.prepare("SELECT body FROM observations WHERE wallet=? AND at<=? ORDER BY at,id").all(wallet,before):this.db.prepare("SELECT body FROM observations WHERE at<=? ORDER BY at,id").all(before);return rows.map(x=>JSON.parse(x.body))}
   entity(kind,id,body){const at=Date.now(),encoded=JSON.stringify(body);this.db.prepare("INSERT INTO entities VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET at=excluded.at,body=excluded.body").run(kind,id,at,encoded);this.mirror(()=>this.persistence.upsert("entities",{kind,id,at,body:encoded},"kind,id"));}
-  entities(kind,limit=500){return this.db.prepare("SELECT body FROM entities WHERE kind=? ORDER BY at DESC LIMIT ?").all(kind,limit).map(x=>JSON.parse(x.body))}
+  entities(kind,limit=500){
+    // Wallet consumers include signal correlation and targeted historical backfill. A
+    // pure recency LIMIT can silently exclude the few qualified / near-qualified
+    // wallets after a bulk startup rescore gives thousands of rows the same timestamp.
+    // Rank wallet intelligence by qualification potential first, then recency. Other
+    // entity kinds preserve their original recency semantics.
+    const rows=kind==="wallet"
+      ?this.db.prepare("SELECT body FROM entities WHERE kind=? ORDER BY COALESCE(json_extract(body,'$.eligible'),0) DESC, COALESCE(json_extract(body,'$.roundTrips'),0) DESC, COALESCE(json_extract(body,'$.lowerMean95'),-999999) DESC, COALESCE(json_extract(body,'$.score'),0) DESC, at DESC LIMIT ?").all(kind,limit)
+      :this.db.prepare("SELECT body FROM entities WHERE kind=? ORDER BY at DESC LIMIT ?").all(kind,limit);
+    return rows.map(x=>JSON.parse(x.body));
+  }
   order(id){const r=this.db.prepare("SELECT * FROM orders WHERE id=?").get(id);return r?{...JSON.parse(r.body),state:r.state}:null}
   orders(){return this.db.prepare("SELECT * FROM orders ORDER BY updated DESC").all().map(r=>({...JSON.parse(r.body),state:r.state}))}
   saveOrder(o){const updated=Date.now(),encoded=JSON.stringify(o);this.db.prepare("INSERT INTO orders VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,body=excluded.body,updated=excluded.updated").run(o.id,o.state,encoded,updated);this.mirror(()=>this.persistence.upsert("orders",{id:o.id,state:o.state,body:encoded,updated},"id"));}
