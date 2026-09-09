@@ -1,7 +1,10 @@
 // Paper liquidation policy: entry price-impact limits must never strand an existing position.
 // A token->USDC quote is itself the conservative liquidation mark because paper fills use
 // otherAmountThreshold. We still enforce route identity, amount, freshness and slippage.
+import { installMultiEngine } from './multi-engine.mjs';
+
 export function installPaperExitPolicy(Trader, USDC) {
+  installMultiEngine(Trader);
   const original = Trader.prototype.routeReason;
   Trader.prototype.routeReason = function routeReason(q, inputMint, outputMint, amount, st) {
     const isPaperLiquidation = this.c?.mode === 'paper' && inputMint !== USDC && outputMint === USDC;
