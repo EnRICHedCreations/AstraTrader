@@ -68,6 +68,25 @@ export class SupabasePersistence {
     }
     return out;
   }
+  async observationRows({maxRows=100000,pageSize=500}={}) {
+    const out=[],size=Math.max(1,Math.min(1000,pageSize));
+    let cursor=null;
+    while(out.length<maxRows){
+      const wanted=Math.min(size,maxRows-out.length);
+      const params=new URLSearchParams({select:"*",order:"at.desc,id.desc",limit:String(wanted)});
+      if(cursor){
+        params.set("or",`(at.lt.${cursor.at},and(at.eq.${cursor.at},id.lt.${cursor.id}))`);
+      }
+      const page=await this.request(`${TABLES.observations}?${params.toString()}`);
+      if(!Array.isArray(page))throw Error("Unexpected Supabase observations response");
+      out.push(...page);
+      if(page.length<wanted)break;
+      const last=page.at(-1);
+      if(!last||last.at==null||!last.id)break;
+      cursor={at:last.at,id:last.id};
+    }
+    return out;
+  }
   async deleteJobs(filters){const params=new URLSearchParams(filters);await this.request(`${TABLES.jobs}?${params.toString()}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});}
   async pruneJobs(now=Date.now()){
     const cutoff=now-ACTIVE_JOB_MAX_AGE_MS;
@@ -90,9 +109,6 @@ export class SupabasePersistence {
     const now=Date.now(),cutoff=now-ACTIVE_JOB_MAX_AGE_MS;
     await this.pruneJobs(now);
 
-    // Hydrate small safety-critical tables concurrently, then bulk history in bounded
-    // sequential reads. This avoids saturating Supabase with several large paginated
-    // result sets at once and prevents one slow page from restarting all prior work.
     const [meta,jobs,orders,reservations]=await Promise.all([
       this.rows("meta",{order:"key.asc",maxRows:2000}),
       this.rows("jobs",{order:"available.desc",filters:{state:"in.(pending,running)",available:`gte.${cutoff}`},maxRows:5000,pageSize:500}),
@@ -100,7 +116,9 @@ export class SupabasePersistence {
       this.rows("reservations",{order:"day.desc,id.desc",maxRows:2000,pageSize:500}),
     ]);
     const eventsDesc=await this.rows("events",{order:"seq.desc",maxRows:20000,pageSize:500});
-    const observationsDesc=await this.rows("observations",{order:"at.desc,id.desc",maxRows:100000,pageSize:500});
+    // Observations are the largest durable history table. Cursor pagination keeps every
+    // page O(page size) instead of making later pages rescan tens of thousands of rows.
+    const observationsDesc=await this.observationRows({maxRows:100000,pageSize:500});
     const walletEntities=await this.rows("entities",{order:"at.desc",filters:{kind:"eq.wallet"},maxRows:20000,pageSize:250});
     const otherEntities=await this.rows("entities",{order:"at.desc",filters:{kind:"neq.wallet"},maxRows:10000,pageSize:250});
     const entities=[...walletEntities,...otherEntities];
