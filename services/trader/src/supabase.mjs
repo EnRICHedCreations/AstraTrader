@@ -90,12 +90,12 @@ export class SupabasePersistence {
     const edgeEntities=await this.entityRows("edge",{maxRows:10000,pageSize:500});
     const signalEntities=await this.entityRows("signal",{maxRows:2000,pageSize:250});
     const engineSignalEntities=await this.entityRows("engine_signal",{maxRows:10000,pageSize:500});
+    const temporalEngineSignalEntities=await this.entityRows("temporal_engine_signal",{maxRows:10000,pageSize:500});
     const tokenEntities=await this.entityRows("token",{maxRows:1000,pageSize:250});
     const smallKinds=["signer","health","liveEquity","experiment"];
     const smallEntities=(await Promise.all(smallKinds.map(kind=>this.entityRows(kind,{maxRows:100,pageSize:100})))).flat();
-    // Engine signals are durable research evidence. They must survive process/revision
-    // restarts so forward outcomes and promotion statistics remain cumulative.
-    const entities=[...walletEntities,...edgeEntities,...signalEntities,...engineSignalEntities,...tokenEntities,...smallEntities];
+    // Engine research evidence is durable across process and revision restarts.
+    const entities=[...walletEntities,...edgeEntities,...signalEntities,...engineSignalEntities,...temporalEngineSignalEntities,...tokenEntities,...smallEntities];
     store.hydrate({meta,events:eventsDesc.reverse(),jobs,observations:observationsDesc.reverse(),orders,entities,reservations});
   }
   async hydrate(store) {let lastError;for(let attempt=0;attempt<2;attempt+=1){try{return await this.hydrateOnce(store)}catch(error){lastError=error;if(!transientHydrationError(error)||attempt===1)throw error;await sleep(1000)}}throw lastError;}
