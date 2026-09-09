@@ -86,3 +86,12 @@ test("audit chain binds every persisted record to its predecessor", () => {
   }
   s.close();
 });
+test("wallet entity limits retain qualified and near-qualified intelligence", () => {
+  const s = new Store(":memory:");
+  s.entity("wallet", "recent-no-history", { wallet:"recent-no-history", eligible:false, roundTrips:0, lowerMean95:0, score:50 });
+  s.entity("wallet", "near", { wallet:"near", eligible:false, roundTrips:5, lowerMean95:0.01, score:60 });
+  s.entity("wallet", "eligible", { wallet:"eligible", eligible:true, roundTrips:6, lowerMean95:0.02, score:60 });
+  const top=s.entities("wallet",2);
+  assert.deepEqual(top.map(w=>w.wallet), ["eligible","near"]);
+  s.close();
+});
