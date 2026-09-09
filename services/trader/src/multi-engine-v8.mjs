@@ -1,6 +1,7 @@
 import { installMultiEngine as installV7 } from './multi-engine.mjs';
 import { strategy } from './strategy.mjs';
 import { USDC } from './config.mjs';
+import { inspect } from './intelligence.mjs';
 import { RESEARCH_NOTIONAL_USDC_RAW, researchQuoteReason, entryResearchFill, exitResearchFill, executableRoundTripReturn } from './research-cost.mjs';
 
 const POLICY='multi-engine-v8';
@@ -55,7 +56,7 @@ export function installMultiEngine(Trader){
    const latchKey='temporal-consensus-latch:'+mint,latch=this.s.get(latchKey,null),lastEvidenceAt=Math.max(...safe.map(s=>Number(s.at)||0));
    if(latch?.active&&lastEvidenceAt-Number(latch.lastEvidenceAt||0)<TEMPORAL_TTL_MS){this.s.set(latchKey,{...latch,lastEvidenceAt});repeatSuppressed++;continue}
    const bucket=Math.floor(now/st.signalBucketMs),id='temporal:'+mint+':'+bucket;if(this.s.get(id))continue;const newest=safe.sort((a,b)=>b.at-a.at)[0],reasons=[];
-   let freshRisk;try{freshRisk=await this.r.inspect(mint);if((freshRisk?.reasons??[]).length){reasons.push(...freshRisk.reasons);freshRiskRejected++}}catch{reasons.push('Fresh asset risk inspection unavailable');freshRiskRejected++}
+   let freshRisk;try{freshRisk=await inspect(mint,this.p,this.c);if((freshRisk?.reasons??[]).length){reasons.push(...freshRisk.reasons);freshRiskRejected++}}catch{reasons.push('Fresh asset risk inspection unavailable');freshRiskRejected++}
    if(st.requireRouterCredentials&&!this.c.jupiterKey){reasons.push('Router credentials missing');routerRejected++}
    let market;try{market=await pairPrice(this,mint)}catch{}if(!market||market.liquidity<st.minLiquidityUsd)reasons.push('Executable market quote unavailable or below liquidity floor');
    let executable;if(!reasons.length)try{executable=await executableEntry(this,mint,st);if(executable.reason){reasons.push(executable.reason);entryQuoteRejected++}}catch(e){reasons.push('Executable entry quote unavailable');entryQuoteRejected++}
