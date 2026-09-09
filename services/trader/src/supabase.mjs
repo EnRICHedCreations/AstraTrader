@@ -74,11 +74,43 @@ export class SupabasePersistence {
     while(out.length<maxRows){
       const wanted=Math.min(size,maxRows-out.length);
       const params=new URLSearchParams({select:"*",order:"at.desc,id.desc",limit:String(wanted)});
-      if(cursor){
-        params.set("or",`(at.lt.${cursor.at},and(at.eq.${cursor.at},id.lt.${cursor.id}))`);
-      }
+      if(cursor)params.set("or",`(at.lt.${cursor.at},and(at.eq.${cursor.at},id.lt.${cursor.id}))`);
       const page=await this.request(`${TABLES.observations}?${params.toString()}`);
       if(!Array.isArray(page))throw Error("Unexpected Supabase observations response");
+      out.push(...page);
+      if(page.length<wanted)break;
+      const last=page.at(-1);
+      if(!last||last.at==null||!last.id)break;
+      cursor={at:last.at,id:last.id};
+    }
+    return out;
+  }
+  async eventRows({maxRows=10000,pageSize=500}={}) {
+    const out=[],size=Math.max(1,Math.min(1000,pageSize));
+    let beforeSeq=null;
+    while(out.length<maxRows){
+      const wanted=Math.min(size,maxRows-out.length);
+      const params=new URLSearchParams({select:"*",order:"seq.desc",limit:String(wanted)});
+      if(beforeSeq!==null)params.set("seq",`lt.${beforeSeq}`);
+      const page=await this.request(`${TABLES.events}?${params.toString()}`);
+      if(!Array.isArray(page))throw Error("Unexpected Supabase events response");
+      out.push(...page);
+      if(page.length<wanted)break;
+      const last=page.at(-1);
+      if(last?.seq==null)break;
+      beforeSeq=last.seq;
+    }
+    return out;
+  }
+  async entityRows(kind,{maxRows=10000,pageSize=500}={}) {
+    const out=[],size=Math.max(1,Math.min(1000,pageSize));
+    let cursor=null;
+    while(out.length<maxRows){
+      const wanted=Math.min(size,maxRows-out.length);
+      const params=new URLSearchParams({select:"*",kind:`eq.${kind}`,order:"at.desc,id.desc",limit:String(wanted)});
+      if(cursor)params.set("or",`(at.lt.${cursor.at},and(at.eq.${cursor.at},id.lt.${cursor.id}))`);
+      const page=await this.request(`${TABLES.entities}?${params.toString()}`);
+      if(!Array.isArray(page))throw Error(`Unexpected Supabase ${kind} entities response`);
       out.push(...page);
       if(page.length<wanted)break;
       const last=page.at(-1);
@@ -115,13 +147,19 @@ export class SupabasePersistence {
       this.rows("orders",{order:"updated.desc",maxRows:20000,pageSize:500}),
       this.rows("reservations",{order:"day.desc,id.desc",maxRows:2000,pageSize:500}),
     ]);
-    const eventsDesc=await this.rows("events",{order:"seq.desc",maxRows:20000,pageSize:500});
-    // Observations are the largest durable history table. Cursor pagination keeps every
-    // page O(page size) instead of making later pages rescan tens of thousands of rows.
+
+    // Cold-start only restores durable state that affects safety, scoring, execution or
+    // operator visibility. Large graph entities are recomputed by the next evaluation
+    // cycle and are intentionally excluded from startup hydration.
+    const eventsDesc=await this.eventRows({maxRows:10000,pageSize:500});
     const observationsDesc=await this.observationRows({maxRows:100000,pageSize:500});
-    const walletEntities=await this.rows("entities",{order:"at.desc",filters:{kind:"eq.wallet"},maxRows:20000,pageSize:250});
-    const otherEntities=await this.rows("entities",{order:"at.desc",filters:{kind:"neq.wallet"},maxRows:10000,pageSize:250});
-    const entities=[...walletEntities,...otherEntities];
+    const walletEntities=await this.entityRows("wallet",{maxRows:20000,pageSize:500});
+    const edgeEntities=await this.entityRows("edge",{maxRows:10000,pageSize:500});
+    const signalEntities=await this.entityRows("signal",{maxRows:2000,pageSize:250});
+    const tokenEntities=await this.entityRows("token",{maxRows:1000,pageSize:250});
+    const smallKinds=["signer","health","liveEquity","experiment"];
+    const smallEntities=(await Promise.all(smallKinds.map(kind=>this.entityRows(kind,{maxRows:100,pageSize:100})))).flat();
+    const entities=[...walletEntities,...edgeEntities,...signalEntities,...tokenEntities,...smallEntities];
     store.hydrate({meta,events:eventsDesc.reverse(),jobs,observations:observationsDesc.reverse(),orders,entities,reservations});
   }
   async hydrate(store) {
