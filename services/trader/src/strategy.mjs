@@ -4,7 +4,7 @@ const DEFAULTS=Object.freeze({
   walletRequirePositiveLower95:true,
   walletRequireUntainted:true,
   walletConfidenceTrips:12,
-  correlationGroupsRequired:2,
+  correlationGroupsRequired:1,
   observationWindowMs:900000,
   signalMintLimit:5,
   signalBucketMs:60000,
