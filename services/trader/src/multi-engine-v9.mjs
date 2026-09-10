@@ -1,67 +1,11 @@
 import { installMultiEngine as installV8 } from './multi-engine-v8.mjs';
-
-const POLICY='multi-engine-v9-candidate-source';
-const SOURCE_POLICY='multi-engine-v8';
-const PROMOTION_MIN_SAMPLES=30;
-
-function combo(signal){return [...new Set((signal.engines??[]).map(x=>x.engine).filter(Boolean))].sort().join('+')}
-function usableOutcomes(signal){return Object.fromEntries(Object.entries(signal.outcomes??{}).filter(([,o])=>o?.usableForPromotion===true&&Number.isFinite(o?.netReturn)))}
-
-export function installMultiEngine(Trader){
- installV8(Trader);
- if(Trader.prototype.__multiEngineCandidateSourceInstalled)return;
- Trader.prototype.__multiEngineCandidateSourceInstalled=true;
- const prior=Trader.prototype.evaluate;
- Trader.prototype.evaluate=async function(){
-  await prior.call(this);
-  if(this.s.get('paused',false))return;
-  const now=Date.now();
-  const temporal=this.s.entities('temporal_engine_signal',5000).filter(s=>s.policy===SOURCE_POLICY);
-  let shadow=0,rejected=0,settled=0;
-  for(const s of temporal){
-   const outcomes=usableOutcomes(s),usableCount=Object.keys(outcomes).length;
-   const status=s.reasons?.length?'REJECTED':'SHADOW_VALIDATING';
-   if(status==='REJECTED')rejected++;else shadow++;
-   if(usableCount)settled++;
-   const candidate={
-    id:'candidate:'+s.id,
-    sourceSignalId:s.id,
-    source:'multi-engine-consensus',
-    sourcePolicy:s.policy,
-    policy:POLICY,
-    mint:s.mint,
-    symbol:s.symbol,
-    at:s.at,
-    updatedAt:now,
-    score:s.score,
-    status,
-    action:'SHADOW_ONLY',
-    executionEligible:false,
-    livePromotionAllowed:false,
-    reasons:s.reasons??[],
-    engines:s.engines??[],
-    combination:combo(s),
-    entryPrice:s.entryPrice??null,
-    entryFill:s.entryFill??null,
-    outcomes:s.outcomes??{},
-    usableOutcomes:outcomes,
-    validation:{
-     costModel:'jupiter-executable-min-output-roundtrip',
-     requiredSamples:PROMOTION_MIN_SAMPLES,
-     usableOutcomeCount:usableCount,
-     independentCandidateSource:true,
-     legacyWalletEligibilityRequired:false,
-     productionSafetyGatesPreserved:true
-    },
-    evidence:{...(s.evidence??{}),candidateSource:POLICY,shadowOnly:true}
-   };
-   this.s.entity('multi_engine_candidate',candidate.id,candidate);
-  }
-  this.s.entity('experiment','multi-engine-candidate-funnel',{
-   at:now,policy:POLICY,sourcePolicy:SOURCE_POLICY,independentCandidateSource:true,
-   legacyWalletEligibilityRequired:false,shadowOnly:true,livePromotionAllowed:false,
-   productionSafetyGatesPreserved:true,total:temporal.length,shadow,rejected,withUsableOutcomes:settled,
-   note:'Candidate source is isolated from Trader.entry; promotion requires separately validated executable performance.'
-  });
- };
-}
+import { strategy } from './strategy.mjs';
+import { USDC } from './config.mjs';
+import { inspect } from './intelligence.mjs';
+import { RESEARCH_NOTIONAL_USDC_RAW, researchQuoteReason, entryResearchFill, exitResearchFill, executableRoundTripReturn } from './research-cost.mjs';
+const POLICY='multi-engine-v9',WINDOW_MS=300000,HORIZONS=[60000,300000,900000,3600000],DELAY_LIMIT=120000,PROMOTION={minSamples:30,minWinRate:.55,minMeanReturn:.005,minLower95:0,minRiskAdjusted:.15,maxDrawdown:.15};
+const mean=a=>a.length?a.reduce((n,x)=>n+x,0)/a.length:0,std=a=>{if(a.length<2)return 0;const m=mean(a);return Math.sqrt(a.reduce((n,x)=>n+(x-m)**2,0)/(a.length-1))};
+function dd(rs){let e=1,p=1,d=0;for(const r of rs){e*=Math.max(0,1+r);p=Math.max(p,e);d=Math.max(d,p?1-e/p:1)}return d}function metrics(rs){const samples=rs.length,m=mean(rs),sd=std(rs),se=samples?sd/Math.sqrt(samples):0;return{samples,meanReturn:m,winRate:samples?rs.filter(x=>x>0).length/samples:0,volatility:sd,lower95:m-1.96*se,riskAdjusted:sd?m/sd:m>0?m:0,maxDrawdown:dd(rs)}}function promote(m){const checks={minSamples:m.samples>=30,minWinRate:m.winRate>=.55,minMeanReturn:m.meanReturn>=.005,positiveLower95:m.lower95>0,minRiskAdjusted:m.riskAdjusted>=.15,maxDrawdown:m.maxDrawdown<=.15};return{eligible:Object.values(checks).every(Boolean),checks,thresholds:PROMOTION}}
+async function market(c,m){const p=(await c.p.pairs(m))[0],price=Number(p?.priceUsd),liquidity=Number(p?.liquidity?.usd??p?.liquidityUsd??0);return Number.isFinite(price)&&price>0?{price,liquidity}:null}
+async function settle(c,now,st){let n=0;for(const s of c.s.entities('v9_engine_signal',1000).filter(x=>x.entryFill?.outputRaw)){if(n>=20)break;const outcomes={...(s.outcomes??{})};let changed=false;for(const h of HORIZONS){if(outcomes[h]||now-s.at<h)continue;const delay=Math.max(0,now-(s.at+h));let reason=null,fill=null,net=null;try{const q=await c.p.quote(s.mint,USDC,s.entryFill.outputRaw);reason=researchQuoteReason(q,s.mint,USDC,s.entryFill.outputRaw,st);if(!reason){fill=exitResearchFill(q);net=executableRoundTripReturn(s.entryFill,fill)}}catch(e){reason=String(e?.message??e)}outcomes[h]={at:now,netReturn:net,return:net,exitFill:fill,routeReason:reason,settlementDelayMs:delay,settlementQuality:delay<=DELAY_LIMIT?'usable':'late',costModel:'jupiter-executable-min-output-roundtrip',usableForPromotion:delay<=DELAY_LIMIT&&!reason&&Number.isFinite(net),win:Number.isFinite(net)?net>0:null};changed=true;n++;break}if(changed)c.s.entity('v9_engine_signal',s.id,{...s,outcomes,updatedAt:now})}const all=c.s.entities('v9_engine_signal',5000),rows=[];for(const h of HORIZONS){const rs=all.filter(s=>s.outcomes?.[h]?.usableForPromotion).sort((a,b)=>a.at-b.at).map(s=>s.outcomes[h].netReturn).filter(Number.isFinite);if(rs.length){const m=metrics(rs);rows.push({name:'accumulation+breadth',horizonMs:h,cohort:'v9-independent-executable',returnBasis:'jupiter-executable',...m,promotion:promote(m)})}}c.s.entity('experiment','v9-accumulation-breadth-leaderboard',{at:now,policy:POLICY,shadowOnly:true,researchOnly:true,entryPolicy:'first-independent-accumulation-breadth-transition',windowMs:WINDOW_MS,researchNotionalUsdc:RESEARCH_NOTIONAL_USDC_RAW/1e6,promotionPolicy:PROMOTION,signals:all.length,promotionEligible:rows.filter(r=>r.promotion.eligible),rows})}
+export function installMultiEngine(Trader){installV8(Trader);if(Trader.prototype.__v9ABInstalled)return;Trader.prototype.__v9ABInstalled=true;const prior=Trader.prototype.evaluate;Trader.prototype.evaluate=async function(){await prior.call(this);if(this.s.get('paused',false))return;const st=strategy(),now=Date.now();try{await settle(this,now,st)}catch{}const recent=this.s.entities('engine_signal',5000).filter(s=>s.at>=now-WINDOW_MS&&s.evidence?.prefilteredSafeUniverse===true),mints=[...new Set(recent.map(s=>s.mint))];let candidates=0,created=0,suppressed=0,rejected=0;for(const mint of mints){const ev=recent.filter(s=>s.mint===mint&&(s.evidence?.risk?.reasons??[]).length===0).sort((a,b)=>a.at-b.at),aa=ev.filter(s=>(s.engines??[]).some(e=>e.engine==='accumulation')),bb=ev.filter(s=>(s.engines??[]).some(e=>e.engine==='breadth'));if(!aa.length||!bb.length)continue;candidates++;const transitionAt=Math.max(aa[0].at,bb[0].at),lastAt=Math.max(...ev.map(s=>s.at)),key='v9-ab-latch:'+mint,latch=this.s.get(key,null);if(latch?.active&&lastAt-Number(latch.lastEvidenceAt||0)<WINDOW_MS){this.s.set(key,{...latch,lastEvidenceAt:lastAt});suppressed++;continue}const id='v9-ab:'+mint+':'+transitionAt;if(this.s.get(id))continue;const reasons=[];let risk;try{risk=await inspect(mint,this.p,this.c);reasons.push(...(risk?.reasons??[]))}catch{reasons.push('Fresh asset risk inspection unavailable')}if(st.requireRouterCredentials&&!this.c.jupiterKey)reasons.push('Router credentials missing');let mk;try{mk=await market(this,mint)}catch{}if(!mk||mk.liquidity<st.minLiquidityUsd)reasons.push('Executable market quote unavailable or below liquidity floor');let entry;if(!reasons.length)try{const q=await this.p.quote(USDC,mint,RESEARCH_NOTIONAL_USDC_RAW),r=researchQuoteReason(q,USDC,mint,RESEARCH_NOTIONAL_USDC_RAW,st);if(r)reasons.push(r);else entry=entryResearchFill(q)}catch{reasons.push('Executable entry quote unavailable')}const newest=ev[ev.length-1],signal={id,mint,symbol:newest?.symbol,at:now,transitionAt,action:reasons.length?'REJECT':'SHADOW_BUY',reasons,policy:POLICY,entryPrice:mk?.price??null,entryFill:entry??null,engines:[{engine:'accumulation'},{engine:'breadth'}],evidence:{independentExperiment:true,entryPolicy:'first-independent-accumulation-breadth-transition',windowMs:WINDOW_MS,sourceSignalIds:ev.map(s=>s.id),risk,shadowOnly:true,researchCostModel:'jupiter-executable-min-output-roundtrip'}};this.s.tx(()=>{this.s.entity('signal',id,signal);this.s.entity('v9_engine_signal',id,{...signal,outcomes:{}});this.s.event(reasons.length?'V9_SIGNAL_REJECTED':'V9_SIGNAL_SHADOW',signal,id);this.s.set(id,true);if(!reasons.length)this.s.set(key,{active:true,firstSignalId:id,activatedAt:now,lastEvidenceAt:lastAt})});created++;if(reasons.length)rejected++}this.s.entity('experiment','v9-accumulation-breadth-funnel',{at:now,policy:POLICY,entryPolicy:'first-independent-accumulation-breadth-transition',windowMs:WINDOW_MS,candidates,created,suppressed,rejected,shadowOnly:true})}}
